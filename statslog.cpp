@@ -73,6 +73,8 @@ inline int32_t map_kill_reason(enum kill_reasons reason) {
     switch (reason) {
         case PRESSURE_AFTER_KILL:
             return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__PRESSURE_AFTER_KILL;
+        case CRITICAL_KILL:
+            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__CRITICAL_KILL;
         case NOT_RESPONDING:
             return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__NOT_RESPONDING;
         case LOW_SWAP_AND_THRASHING:
@@ -85,6 +87,14 @@ inline int32_t map_kill_reason(enum kill_reasons reason) {
             return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__DIRECT_RECL_AND_THRASHING;
         case LOW_MEM_AND_SWAP_UTIL:
             return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__LOW_MEM_AND_SWAP_UTIL;
+        case DIRECT_RECL_AND_THROT:
+            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__DIRECT_RECL_AND_THROT;
+        case DIRECT_RECL_AND_LOW_MEM:
+            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__DIRECT_RECL_AND_LOW_MEM;
+        case COMPACTION:
+            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__COMPACTION;
+        case KILL_REASON_COUNT:
+            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__KILL_REASON_COUNT;
         default:
             return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__UNKNOWN;
     }

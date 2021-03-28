@@ -21,6 +21,8 @@
 #include <sys/epoll.h>
 
 #include <log/log.h>
+#include <cutils/fs.h>
+#include <stdio.h>
 #include "psi/psi.h"
 
 #define PSI_MON_FILE_MEMORY "/proc/pressure/memory"
@@ -79,7 +81,7 @@ int register_psi_monitor(int epollfd, int fd, void* data) {
     int res;
     struct epoll_event epev;
 
-    epev.events = EPOLLPRI;
+    epev.events = EPOLLPRI | EPOLLWAKEUP;
     epev.data.ptr = data;
     res = epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &epev);
     if (res < 0) {

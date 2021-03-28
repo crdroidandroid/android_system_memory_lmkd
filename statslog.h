@@ -41,11 +41,15 @@ struct memory_stat {
 enum kill_reasons {
     NONE = -1, /* To denote no kill condition */
     PRESSURE_AFTER_KILL = 0,
+    CRITICAL_KILL,
     NOT_RESPONDING,
     LOW_SWAP_AND_THRASHING,
     LOW_MEM_AND_SWAP,
     LOW_MEM_AND_THRASHING,
     DIRECT_RECL_AND_THRASHING,
+    DIRECT_RECL_AND_THROT,
+    DIRECT_RECL_AND_LOW_MEM,
+    COMPACTION,
     LOW_MEM_AND_SWAP_UTIL,
     KILL_REASON_COUNT
 };
