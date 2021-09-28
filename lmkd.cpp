@@ -29,7 +29,6 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
-#include <sys/pidfd.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
@@ -166,6 +165,15 @@ static inline void trace_kill_end() {}
 #define DEF_COMPLETE_STALL 700
 
 #define LMKD_REINIT_PROP "lmkd.reinit"
+
+static inline int sys_pidfd_open(pid_t pid, unsigned int flags) {
+    return syscall(__NR_pidfd_open, pid, flags);
+}
+
+static inline int sys_pidfd_send_signal(int pidfd, int sig, siginfo_t *info,
+                                        unsigned int flags) {
+    return syscall(__NR_pidfd_send_signal, pidfd, sig, info, flags);
+}
 
 /* default to old in-kernel interface if no memory pressure events */
 static bool use_inkernel_interface = true;
@@ -1192,7 +1200,7 @@ static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred 
         int pidfd = -1;
 
         if (pidfd_supported) {
-            pidfd = TEMP_FAILURE_RETRY(pidfd_open(params.pid, 0));
+            pidfd = TEMP_FAILURE_RETRY(sys_pidfd_open(params.pid, 0));
             if (pidfd < 0) {
                 ALOGE("pidfd_open for pid %d failed; errno=%d", params.pid, errno);
                 return;
@@ -2196,7 +2204,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         r = kill(pid, SIGKILL);
     } else {
         start_wait_for_proc_kill(pidfd);
-        r = pidfd_send_signal(pidfd, SIGKILL, NULL, 0);
+        r = sys_pidfd_send_signal(pidfd, SIGKILL, NULL, 0);
     }
 
     trace_kill_end();
@@ -3248,7 +3256,7 @@ static int init(void) {
     }
 
     /* check if kernel supports pidfd_open syscall */
-    pidfd = TEMP_FAILURE_RETRY(pidfd_open(getpid(), 0));
+    pidfd = TEMP_FAILURE_RETRY(sys_pidfd_open(getpid(), 0));
     if (pidfd < 0) {
         pidfd_supported = (errno != ENOSYS);
     } else {
