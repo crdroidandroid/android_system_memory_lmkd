@@ -2824,7 +2824,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
         }
 
         if (min_score_adj == OOM_SCORE_ADJ_MAX + 1) {
-            if (debug_process_killing) {
+            if (debug_process_killing && lowmem_targets_size) {
                 ALOGI("Ignore %s memory pressure event "
                       "(free memory=%ldkB, cache=%ldkB, limit=%ldkB)",
                       level_name[level], other_free * page_k, other_file * page_k,
