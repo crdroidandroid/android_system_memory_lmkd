@@ -40,7 +40,6 @@ cc_binary {
     init_rc: ["lmkd.rc"],
     defaults: ["stats_defaults"],
     logtags: ["event.logtags"],
-    afdo: true,
 }
 
 cc_library_static {
