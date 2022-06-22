@@ -468,7 +468,7 @@ enum vmstat_field {
     VS_FIELD_COUNT
 };
 
-static const char* const vmstat_field_names[MI_FIELD_COUNT] = {
+static const char* const vmstat_field_names[VS_FIELD_COUNT] = {
     "nr_free_pages",
     "nr_inactive_file",
     "nr_active_file",
