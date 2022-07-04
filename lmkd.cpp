@@ -3076,7 +3076,8 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
 do_kill:
     if (low_ram_device) {
         /* For Go devices kill only one task */
-        if (find_and_kill_process(level_oomadj[level], NULL, &mi, &wi, &curr_tm, NULL) == 0) {
+        if (find_and_kill_process(use_minfree_levels ? min_score_adj : level_oomadj[level],
+                                  NULL, &mi, &wi, &curr_tm, NULL) == 0) {
             if (debug_process_killing) {
                 ALOGI("Nothing to kill");
             }
