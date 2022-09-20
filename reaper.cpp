@@ -64,6 +64,10 @@ static void* reaper_main(void* param) {
         ALOGE("Failed to assign cpuset to the reaper thread");
     }
 
+    if (setpriority(PRIO_PROCESS, tid, ANDROID_PRIORITY_HIGHEST)) {
+        ALOGW("Unable to raise priority of the reaper thread (%d): errno=%d", tid, errno);
+    }
+
     for (;;) {
         target = reaper->dequeue_request();
 
@@ -112,6 +116,9 @@ bool Reaper::is_reaping_supported() {
 
 bool Reaper::init(int comm_fd) {
     char name[16];
+    struct sched_param param = {
+        .sched_priority = 0,
+    };
 
     if (thread_cnt_ > 0) {
         // init should not be called multiple times
@@ -123,6 +130,10 @@ bool Reaper::init(int comm_fd) {
         if (pthread_create(&thread_pool_[thread_cnt_], NULL, reaper_main, this)) {
             ALOGE("pthread_create failed: %s", strerror(errno));
             continue;
+        }
+        // set normal scheduling policy for the reaper thread
+        if (pthread_setschedparam(thread_pool_[thread_cnt_], SCHED_OTHER, &param)) {
+            ALOGW("set SCHED_OTHER failed %s", strerror(errno));
         }
         snprintf(name, sizeof(name), "lmkd_reaper%d", thread_cnt_);
         if (pthread_setname_np(thread_pool_[thread_cnt_], name)) {

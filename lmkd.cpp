@@ -42,6 +42,7 @@
 #include <cutils/sockets.h>
 #include <liblmkd_utils.h>
 #include <lmkd.h>
+#include <lmkd_hooks.h>
 #include <log/log.h>
 #include <log/log_event_list.h>
 #include <log/log_time.h>
@@ -65,19 +66,17 @@
 #define ATRACE_TAG ATRACE_TAG_ALWAYS
 #include <cutils/trace.h>
 
-static inline void trace_kill_start(int pid, const char *desc) {
-    ATRACE_INT("kill_one_process", pid);
+static inline void trace_kill_start(const char *desc) {
     ATRACE_BEGIN(desc);
 }
 
 static inline void trace_kill_end() {
     ATRACE_END();
-    ATRACE_INT("kill_one_process", 0);
 }
 
 #else /* LMKD_TRACE_KILLS */
 
-static inline void trace_kill_start(int, const char *) {}
+static inline void trace_kill_start(const char *) {}
 static inline void trace_kill_end() {}
 
 #endif /* LMKD_TRACE_KILLS */
@@ -468,7 +467,7 @@ enum vmstat_field {
     VS_FIELD_COUNT
 };
 
-static const char* const vmstat_field_names[MI_FIELD_COUNT] = {
+static const char* const vmstat_field_names[VS_FIELD_COUNT] = {
     "nr_free_pages",
     "nr_inactive_file",
     "nr_active_file",
@@ -547,7 +546,7 @@ static uint32_t killcnt_total = 0;
 /* PAGE_SIZE / 1024 */
 static long page_k;
 
-static void update_props();
+static bool update_props();
 static bool init_monitors();
 static void destroy_monitors();
 
@@ -1512,14 +1511,19 @@ static void ctrl_command_handler(int dsock_idx) {
     case LMK_UPDATE_PROPS:
         if (nargs != 0)
             goto wronglen;
-        update_props();
-        if (!use_inkernel_interface) {
-            /* Reinitialize monitors to apply new settings */
-            destroy_monitors();
-            result = init_monitors() ? 0 : -1;
-        } else {
-            result = 0;
+        result = -1;
+        if (update_props()) {
+            if (!use_inkernel_interface) {
+                /* Reinitialize monitors to apply new settings */
+                destroy_monitors();
+                if (init_monitors()) {
+                    result = 0;
+                }
+            } else {
+                result = 0;
+            }
         }
+
         len = lmkd_pack_set_update_props_repl(packet, result);
         if (ctrl_data_write(dsock_idx, (char *)packet, len) != len) {
             ALOGE("Failed to report operation results");
@@ -1822,7 +1826,7 @@ static bool meminfo_parse_line(char *line, union meminfo *mi) {
 
 static int64_t read_gpu_total_kb() {
     static int fd = android::bpf::bpfFdGet(
-            "/sys/fs/bpf/map_gpu_mem_gpu_mem_total_map", BPF_F_RDONLY);
+            "/sys/fs/bpf/map_gpuMem_gpu_mem_total_map", BPF_F_RDONLY);
     static constexpr uint64_t kBpfKeyGpuTotalUsage = 0;
     uint64_t value;
 
@@ -2153,6 +2157,8 @@ static void watchdog_callback() {
         if (reaper.kill({ target.pidfd, target.pid, target.uid }, true) == 0) {
             ALOGW("lmkd watchdog killed process %d, oom_score_adj %d", target.pid, oom_score);
             killinfo_log(&target, 0, 0, 0, NULL, NULL, NULL, NULL, NULL);
+            // WARNING: do not use target after pid_remove()
+            pid_remove(target.pid);
             break;
         }
         prev_pid = target.pid;
@@ -2320,7 +2326,18 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     snprintf(desc, sizeof(desc), "lmk,%d,%d,%d,%d,%d", pid, ki ? (int)ki->kill_reason : -1,
              procp->oomadj, min_oom_score, ki ? ki->max_thrashing : -1);
 
-    trace_kill_start(pid, desc);
+    result = lmkd_free_memory_before_kill_hook(procp, rss_kb / page_k, min_oom_score,
+                                               ki ? (int)ki->kill_reason : -1);
+    if (result > 0) {
+      /*
+       * Memory was freed elsewhere; no need to kill. Note: intentionally do not
+       * pid_remove(pid) since it was not killed.
+       */
+      ALOGI("Skipping kill; %ld kB freed elsewhere.", result * page_k);
+      return result;
+    }
+
+    trace_kill_start(desc);
 
     start_wait_for_proc_kill(pidfd < 0 ? pid : pidfd);
     kill_result = reaper.kill({ pidfd, pid, uid }, false);
@@ -2634,11 +2651,11 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     }
 
     /* Identify reclaim state */
-    if (vs.field.pgscan_direct > init_pgscan_direct) {
+    if (vs.field.pgscan_direct != init_pgscan_direct) {
         init_pgscan_direct = vs.field.pgscan_direct;
         init_pgscan_kswapd = vs.field.pgscan_kswapd;
         reclaim = DIRECT_RECLAIM;
-    } else if (vs.field.pgscan_kswapd > init_pgscan_kswapd) {
+    } else if (vs.field.pgscan_kswapd != init_pgscan_kswapd) {
         init_pgscan_kswapd = vs.field.pgscan_kswapd;
         reclaim = KSWAPD_RECLAIM;
     } else if (workingset_refault_file == prev_workingset_refault) {
@@ -3052,7 +3069,8 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
 do_kill:
     if (low_ram_device) {
         /* For Go devices kill only one task */
-        if (find_and_kill_process(level_oomadj[level], NULL, &mi, &wi, &curr_tm, NULL) == 0) {
+        if (find_and_kill_process(use_minfree_levels ? min_score_adj : level_oomadj[level],
+                                  NULL, &mi, &wi, &curr_tm, NULL) == 0) {
             if (debug_process_killing) {
                 ALOGI("Nothing to kill");
             }
@@ -3499,6 +3517,11 @@ static int init(void) {
     }
     ALOGI("Process polling is %s", pidfd_supported ? "supported" : "not supported" );
 
+    if (!lmkd_init_hook()) {
+        ALOGE("Failed to initialize LMKD hooks.");
+        return -1;
+    }
+
     return 0;
 }
 
@@ -3687,7 +3710,7 @@ int issue_reinit() {
     return res == UPDATE_PROPS_SUCCESS ? 0 : -1;
 }
 
-static void update_props() {
+static bool update_props() {
     /* By default disable low level vmpressure events */
     level_oomadj[VMPRESS_LEVEL_LOW] =
         GET_LMK_PROPERTY(int32, "low", OOM_SCORE_ADJ_MAX + 1);
@@ -3731,6 +3754,14 @@ static void update_props() {
     stall_limit_critical = GET_LMK_PROPERTY(int64, "stall_limit_critical", 100);
 
     reaper.enable_debug(debug_process_killing);
+
+    /* Call the update props hook */
+    if (!lmkd_update_props_hook()) {
+        ALOGE("Failed to update LMKD hook props.");
+        return false;
+    }
+
+    return true;
 }
 
 int main(int argc, char **argv) {
@@ -3741,7 +3772,10 @@ int main(int argc, char **argv) {
         return issue_reinit();
     }
 
-    update_props();
+    if (!update_props()) {
+        ALOGE("Failed to initialize props, exiting.");
+        return -1;
+    }
 
     ctx = create_android_logger(KILLINFO_LOG_TAG);
 
