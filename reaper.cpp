@@ -89,6 +89,14 @@ static void* reaper_main(void* param) {
             ALOGI("Process %d was reaped in %ldms", target.pid,
                   get_time_diff_ms(&start_tm, &end_tm));
         }
+
+        if (!SetProcessProfilesCached(target.uid, target.pid,
+                                      {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"})) {
+            if (reaper->debug_enabled()) {
+                ALOGW("Failed to set task profiles for the process (%d) being killed", target.pid);
+            }
+        }
+
 done:
         close(target.pidfd);
         reaper->request_complete();
@@ -152,41 +160,6 @@ bool Reaper::init(int comm_fd) {
     return true;
 }
 
-static void set_process_group_and_prio(uid_t uid, int pid, const std::vector<std::string>& profiles,
-                                       int prio) {
-    DIR* d;
-    char proc_path[PATH_MAX];
-    struct dirent* de;
-
-    if (!SetProcessProfilesCached(uid, pid, profiles)) {
-        ALOGW("Failed to set task profiles for the process (%d) being killed", pid);
-    }
-
-    snprintf(proc_path, sizeof(proc_path), "/proc/%d/task", pid);
-    if (!(d = opendir(proc_path))) {
-        ALOGW("Failed to open %s; errno=%d: process pid(%d) might have died", proc_path, errno,
-              pid);
-        return;
-    }
-
-    while ((de = readdir(d))) {
-        int t_pid;
-
-        if (de->d_name[0] == '.') continue;
-        t_pid = atoi(de->d_name);
-
-        if (!t_pid) {
-            ALOGW("Failed to get t_pid for '%s' of pid(%d)", de->d_name, pid);
-            continue;
-        }
-
-        if (setpriority(PRIO_PROCESS, t_pid, prio) && errno != ESRCH) {
-            ALOGW("Unable to raise priority of killing t_pid (%d): errno=%d", t_pid, errno);
-        }
-    }
-    closedir(d);
-}
-
 bool Reaper::async_kill(const struct target_proc& target) {
     if (target.pidfd == -1) {
         return false;
@@ -209,10 +182,6 @@ bool Reaper::async_kill(const struct target_proc& target) {
     // Wake up a reaper thread
     cond_.notify_one();
     mutex_.unlock();
-
-    set_process_group_and_prio(target.uid, target.pid,
-                               {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
-                               ANDROID_PRIORITY_HIGHEST);
 
     return true;
 }
