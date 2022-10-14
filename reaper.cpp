@@ -233,7 +233,7 @@ int Reaper::kill(const struct target_proc& target, bool synchronous) {
         return result;
     }
 
-    return is_reaping_supported() ? process_mrelease(target.pidfd, 0) : 0;
+    return 0;
 }
 
 Reaper::target_proc Reaper::dequeue_request() {
