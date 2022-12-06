@@ -511,6 +511,7 @@ struct proc {
     uid_t uid;
     int oomadj;
     pid_t reg_pid; /* PID of the process that registered this record */
+    bool valid;
     struct proc *pidhash_next;
 };
 
@@ -942,6 +943,7 @@ static void proc_insert(struct proc *procp) {
     proc_slot(procp);
 }
 
+// Can be called only from the main thread.
 static int pid_remove(int pid) {
     int hval = pid_hashfn(pid);
     struct proc *procp;
@@ -969,6 +971,15 @@ static int pid_remove(int pid) {
     }
     free(procp);
     return 0;
+}
+
+static void pid_invalidate(int pid) {
+    std::shared_lock lock(adjslot_list_lock);
+    struct proc *procp = pid_lookup(pid);
+
+    if (procp) {
+        procp->valid = false;
+    }
 }
 
 /*
@@ -1221,6 +1232,7 @@ static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred 
         procp->uid = params.uid;
         procp->reg_pid = cred->pid;
         procp->oomadj = params.oomadj;
+        procp->valid = true;
         proc_insert(procp);
     } else {
         if (!claim_record(procp, cred->pid)) {
@@ -2088,7 +2100,7 @@ static struct proc *proc_adj_prev(int oomadj, int pid) {
     return NULL;
 }
 
-// When called from a non-main thread, adjslot_list_lock read lock should be taken.
+// Can be called only from the main thread.
 static struct proc *proc_get_heaviest(int oomadj) {
     struct adjslot_list *head = &procadjslot_list[ADJTOSLOT(oomadj)];
     struct adjslot_list *curr = head->next;
@@ -2150,9 +2162,11 @@ static void watchdog_callback() {
             continue;
         }
 
-        if (reaper.kill({ target.pidfd, target.pid, target.uid }, true) == 0) {
+        if (target.valid && reaper.kill({ target.pidfd, target.pid, target.uid }, true) == 0) {
             ALOGW("lmkd watchdog killed process %d, oom_score_adj %d", target.pid, oom_score);
             killinfo_log(&target, 0, 0, 0, NULL, NULL, NULL, NULL, NULL);
+            // Can't call pid_remove() from non-main thread, therefore just invalidate the record
+            pid_invalidate(target.pid);
             break;
         }
         prev_pid = target.pid;
@@ -2290,7 +2304,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     char buf[PAGE_SIZE];
     char desc[LINE_MAX];
 
-    if (!read_proc_status(pid, buf, sizeof(buf))) {
+    if (!procp->valid || !read_proc_status(pid, buf, sizeof(buf))) {
         goto out;
     }
     if (!parse_status_tag(buf, PROC_STATUS_TGID_FIELD, &tgid)) {
