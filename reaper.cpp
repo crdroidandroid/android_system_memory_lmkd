@@ -53,6 +53,41 @@ static inline long get_time_diff_ms(struct timespec *from,
            (to->tv_nsec - from->tv_nsec) / (long)NS_PER_MS;
 }
 
+static void set_process_group_and_prio(uid_t uid, int pid, const std::vector<std::string>& profiles,
+                                       int prio) {
+    DIR* d;
+    char proc_path[PATH_MAX];
+    struct dirent* de;
+
+    if (!SetProcessProfilesCached(uid, pid, profiles)) {
+        ALOGW("Failed to set task profiles for the process (%d) being killed", pid);
+    }
+
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d/task", pid);
+    if (!(d = opendir(proc_path))) {
+        ALOGW("Failed to open %s; errno=%d: process pid(%d) might have died", proc_path, errno,
+              pid);
+        return;
+    }
+
+    while ((de = readdir(d))) {
+        int t_pid;
+
+        if (de->d_name[0] == '.') continue;
+        t_pid = atoi(de->d_name);
+
+        if (!t_pid) {
+            ALOGW("Failed to get t_pid for '%s' of pid(%d)", de->d_name, pid);
+            continue;
+        }
+
+        if (setpriority(PRIO_PROCESS, t_pid, prio) && errno != ESRCH) {
+            ALOGW("Unable to raise priority of killing t_pid (%d): errno=%d", t_pid, errno);
+        }
+    }
+    closedir(d);
+}
+
 static void* reaper_main(void* param) {
     Reaper *reaper = static_cast<Reaper*>(param);
     struct timespec start_tm, end_tm;
@@ -80,8 +115,13 @@ static void* reaper_main(void* param) {
             reaper->notify_kill_failure(target.pid);
             goto done;
         }
+
+        set_process_group_and_prio(target.uid, target.pid,
+                                   {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
+                                   ANDROID_PRIORITY_NORMAL);
+
         if (process_mrelease(target.pidfd, 0)) {
-            ALOGE("process_mrelease %d failed: %s", target.pidfd, strerror(errno));
+            ALOGE("process_mrelease %d failed: %s", target.pid, strerror(errno));
             goto done;
         }
         if (reaper->debug_enabled()) {
@@ -89,6 +129,7 @@ static void* reaper_main(void* param) {
             ALOGI("Process %d was reaped in %ldms", target.pid,
                   get_time_diff_ms(&start_tm, &end_tm));
         }
+
 done:
         close(target.pidfd);
         reaper->request_complete();
@@ -152,41 +193,6 @@ bool Reaper::init(int comm_fd) {
     return true;
 }
 
-static void set_process_group_and_prio(uid_t uid, int pid, const std::vector<std::string>& profiles,
-                                       int prio) {
-    DIR* d;
-    char proc_path[PATH_MAX];
-    struct dirent* de;
-
-    if (!SetProcessProfilesCached(uid, pid, profiles)) {
-        ALOGW("Failed to set task profiles for the process (%d) being killed", pid);
-    }
-
-    snprintf(proc_path, sizeof(proc_path), "/proc/%d/task", pid);
-    if (!(d = opendir(proc_path))) {
-        ALOGW("Failed to open %s; errno=%d: process pid(%d) might have died", proc_path, errno,
-              pid);
-        return;
-    }
-
-    while ((de = readdir(d))) {
-        int t_pid;
-
-        if (de->d_name[0] == '.') continue;
-        t_pid = atoi(de->d_name);
-
-        if (!t_pid) {
-            ALOGW("Failed to get t_pid for '%s' of pid(%d)", de->d_name, pid);
-            continue;
-        }
-
-        if (setpriority(PRIO_PROCESS, t_pid, prio) && errno != ESRCH) {
-            ALOGW("Unable to raise priority of killing t_pid (%d): errno=%d", t_pid, errno);
-        }
-    }
-    closedir(d);
-}
-
 bool Reaper::async_kill(const struct target_proc& target) {
     if (target.pidfd == -1) {
         return false;
@@ -210,10 +216,6 @@ bool Reaper::async_kill(const struct target_proc& target) {
     cond_.notify_one();
     mutex_.unlock();
 
-    set_process_group_and_prio(target.uid, target.pid,
-                               {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
-                               ANDROID_PRIORITY_HIGHEST);
-
     return true;
 }
 
@@ -233,7 +235,7 @@ int Reaper::kill(const struct target_proc& target, bool synchronous) {
         return result;
     }
 
-    return is_reaping_supported() ? process_mrelease(target.pidfd, 0) : 0;
+    return 0;
 }
 
 Reaper::target_proc Reaper::dequeue_request() {
